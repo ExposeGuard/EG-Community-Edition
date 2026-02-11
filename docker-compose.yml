@@ -1,0 +1,8 @@
+services:
+  exposeguard:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - LOGGING_ENABLED=true
+    restart: unless-stopped

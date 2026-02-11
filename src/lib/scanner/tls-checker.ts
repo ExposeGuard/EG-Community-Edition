@@ -1,0 +1,63 @@
+import tls from "tls";
+import { TlsResult } from "./types";
+
+export async function checkTls(hostname: string): Promise<TlsResult | null> {
+  return new Promise((resolve) => {
+    const socket = tls.connect(
+      {
+        host: hostname,
+        port: 443,
+        servername: hostname,
+        timeout: 5000,
+        rejectUnauthorized: false,
+      },
+      () => {
+        try {
+          const cert = socket.getPeerCertificate();
+          if (!cert || !cert.valid_to) {
+            socket.destroy();
+            resolve(null);
+            return;
+          }
+
+          const expiresAt = new Date(cert.valid_to);
+          const now = new Date();
+          const daysUntilExpiry = Math.floor(
+            (expiresAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+          );
+
+          resolve({
+            valid: socket.authorized,
+            issuer: formatCertField(cert.issuer),
+            subject: formatCertField(cert.subject),
+            expiresAt: expiresAt.toISOString(),
+            daysUntilExpiry,
+            expiringSoon: daysUntilExpiry < 14,
+          });
+        } catch {
+          resolve(null);
+        } finally {
+          socket.destroy();
+        }
+      }
+    );
+
+    socket.on("error", () => {
+      socket.destroy();
+      resolve(null);
+    });
+
+    socket.on("timeout", () => {
+      socket.destroy();
+      resolve(null);
+    });
+  });
+}
+
+function formatCertField(field: tls.PeerCertificate["issuer"]): string {
+  if (!field) return "Unknown";
+  const parts: string[] = [];
+  if (field.O) parts.push(field.O);
+  if (field.CN) parts.push(field.CN);
+  return parts.join(" - ") || "Unknown";
+}
