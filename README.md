@@ -228,7 +228,20 @@ This tool is provided for **authorized security assessments only**. By using Exp
 
 ## Screenshots
 
-<!-- Add screenshots here -->
+### Landing Page
+Enter a domain and confirm authorization to begin a scan.
+
+![Landing Page](public/screenshots/landing.png)
+
+### Scan Progress
+Real-time progress tracking as ExposeGuard works through each check.
+
+![Scan Progress](public/screenshots/scanning.png)
+
+### Results
+Summary cards, risk findings, and a detailed host table with expandable rows.
+
+![Results](public/screenshots/results.png)
 
 ---
 
