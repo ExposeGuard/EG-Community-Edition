@@ -7,7 +7,7 @@ export interface ScanRequest {
 export interface ScanJob {
   id: string;
   domain: string;
-  status: "queued" | "running" | "completed" | "failed" | "aborted";
+  status: "queued" | "running" | "completed" | "failed";
   progress: number;
   stage: string;
   startedAt: number;
@@ -23,6 +23,8 @@ export interface ScanResult {
   hosts: HostResult[];
   summary: ScanSummary;
   riskScore: RiskScore;
+  /** Hosts skipped or cut short because the scan hit its time limit */
+  incompleteHosts: number;
 }
 
 export interface HostResult {

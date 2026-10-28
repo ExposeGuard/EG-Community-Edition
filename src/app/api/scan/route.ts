@@ -1,24 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateDomain, normalizeDomain } from "@/lib/utils/validation";
-import { checkRateLimit } from "@/lib/utils/rate-limit";
-import { createJob, runScan } from "@/lib/scanner/orchestrator";
+import { checkRateLimit, getClientIp } from "@/lib/utils/rate-limit";
+import { createJob, hasScanCapacity, runScan } from "@/lib/scanner/orchestrator";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
-  const clientIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
-
-  const rateCheck = checkRateLimit(clientIp);
-  if (!rateCheck.allowed) {
-    return NextResponse.json(
-      {
-        error: "Rate limit exceeded. Maximum 5 scans per hour.",
-        resetAt: new Date(rateCheck.resetAt).toISOString(),
-      },
-      { status: 429 }
-    );
-  }
-
   let body: { domain?: string; consentOwnership?: boolean; consentSafeChecks?: boolean };
   try {
     body = await request.json();
@@ -43,6 +30,28 @@ export async function POST(request: NextRequest) {
   const validation = validateDomain(normalized);
   if (!validation.valid) {
     return NextResponse.json({ error: validation.error }, { status: 400 });
+  }
+
+  if (!hasScanCapacity()) {
+    return NextResponse.json(
+      { error: "Too many scans are running. Please try again in a minute." },
+      { status: 503, headers: { "Retry-After": "60" } }
+    );
+  }
+
+  const clientIp = getClientIp(request.headers.get("x-forwarded-for"));
+  const rateCheck = checkRateLimit(clientIp);
+  if (!rateCheck.allowed) {
+    return NextResponse.json(
+      {
+        error:
+          rateCheck.scope === "global"
+            ? "This server's hourly scan limit has been reached. Please try again later."
+            : "Rate limit exceeded. Maximum 5 scans per hour.",
+        resetAt: new Date(rateCheck.resetAt).toISOString(),
+      },
+      { status: 429 }
+    );
   }
 
   const job = createJob(normalized);

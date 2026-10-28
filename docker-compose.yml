@@ -5,4 +5,6 @@ services:
       - "3000:3000"
     environment:
       - LOGGING_ENABLED=true
+      # Reverse proxies in front of the app (see .env.example)
+      - TRUSTED_PROXY_HOPS=1
     restart: unless-stopped

@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Image from "next/image";
+import Link from "next/link";
+import logo from "../../public/eglogo.png";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -33,10 +36,10 @@ export default function RootLayout({
         <div className="min-h-screen flex flex-col">
           <header className="border-b border-card-border bg-card/50 backdrop-blur-sm">
             <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
-              <a href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-                <img src="/eglogo.png" alt="ExposeGuard" className="w-10 h-10" />
+              <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+                <Image src={logo} alt="ExposeGuard" className="w-10 h-10" />
                 <span className="text-lg font-semibold tracking-tight">ExposeGuard Community</span>
-              </a>
+              </Link>
               <span className="text-xs text-muted hidden sm:block">
                 Exposure Visibility Tool
               </span>

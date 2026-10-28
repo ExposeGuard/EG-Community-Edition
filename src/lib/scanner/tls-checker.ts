@@ -1,13 +1,16 @@
 import tls from "tls";
+import { pinnedLookup } from "@/lib/utils/pinned-lookup";
 import { TlsResult } from "./types";
 
-export async function checkTls(hostname: string): Promise<TlsResult | null> {
+export async function checkTls(hostname: string, addresses: string[]): Promise<TlsResult | null> {
   return new Promise((resolve) => {
     const socket = tls.connect(
       {
         host: hostname,
         port: 443,
         servername: hostname,
+        // Connect only to the already-validated addresses (no re-resolution)
+        lookup: pinnedLookup(addresses),
         timeout: 5000,
         rejectUnauthorized: false,
       },

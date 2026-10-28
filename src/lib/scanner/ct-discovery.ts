@@ -1,3 +1,7 @@
+// crt.sh returns every certificate ever logged for the domain; very large
+// domains can produce hundreds of MB of JSON, so the body is capped.
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
 export async function discoverSubdomains(domain: string): Promise<string[]> {
   const url = `https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json`;
 
@@ -14,10 +18,17 @@ export async function discoverSubdomains(domain: string): Promise<string[]> {
       return [];
     }
 
-    const entries: Array<{ name_value: string }> = await response.json();
+    const body = await readBodyWithLimit(response, MAX_RESPONSE_BYTES);
+    if (body === null) {
+      return [];
+    }
+
+    const entries: Array<{ name_value?: unknown }> = JSON.parse(body);
     const subdomains = new Set<string>();
 
     for (const entry of entries) {
+      if (typeof entry?.name_value !== "string") continue;
+
       const names = entry.name_value.split("\n");
       for (const name of names) {
         const cleaned = name.trim().toLowerCase();
@@ -37,4 +48,26 @@ export async function discoverSubdomains(domain: string): Promise<string[]> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function readBodyWithLimit(response: Response, limit: number): Promise<string | null> {
+  if (!response.body) return null;
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
 }

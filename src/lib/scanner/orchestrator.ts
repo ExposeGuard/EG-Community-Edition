@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { discoverSubdomains } from "./ct-discovery";
 import { resolveHost } from "./dns-resolver";
 import { checkHttp } from "./http-checker";
@@ -5,10 +6,15 @@ import { checkTls } from "./tls-checker";
 import { scanPorts } from "./port-scanner";
 import { calculateRiskScore, determineHostRiskLevel } from "./risk-scorer";
 import { logScan } from "./logger";
-import { ScanJob, ScanResult, HostResult, ScanSummary } from "./types";
+import { ScanJob, ScanResult, HostResult, ScanSummary, PortResult } from "./types";
 
 const MAX_HOSTS = 50;
 const MAX_SCAN_DURATION_MS = 2 * 60 * 1000; // 2 minutes
+const HOST_CONCURRENCY = 10;
+const MAX_ACTIVE_SCANS = 3;
+const JOB_TTL_MS = 60 * 60 * 1000; // Results are kept for 1 hour
+
+export const TIME_LIMIT_FLAG = "Not fully scanned (time limit)";
 
 const jobStore = new Map<string, ScanJob>();
 
@@ -16,8 +22,16 @@ export function getJob(id: string): ScanJob | undefined {
   return jobStore.get(id);
 }
 
+export function hasScanCapacity(): boolean {
+  let active = 0;
+  for (const job of jobStore.values()) {
+    if (job.status === "queued" || job.status === "running") active++;
+  }
+  return active < MAX_ACTIVE_SCANS;
+}
+
 export function createJob(domain: string): ScanJob {
-  const id = generateId();
+  const id = randomUUID();
   const job: ScanJob = {
     id,
     domain,
@@ -35,21 +49,14 @@ export async function runScan(jobId: string): Promise<void> {
   if (!job) return;
 
   const startTime = Date.now();
+  const deadline = startTime + MAX_SCAN_DURATION_MS;
   job.status = "running";
   job.stage = "Discovering subdomains";
   job.progress = 5;
 
   try {
-    const deadline = startTime + MAX_SCAN_DURATION_MS;
-
     // Discover subdomains via CT
     const ctSubdomains = await discoverSubdomains(job.domain);
-
-    if (Date.now() > deadline) {
-      job.status = "aborted";
-      job.error = "Scan duration limit exceeded.";
-      return;
-    }
 
     // Build host list: apex + www + CT results
     const hostSet = new Set<string>();
@@ -62,119 +69,20 @@ export async function runScan(jobId: string): Promise<void> {
     // Deduplicate and cap at MAX_HOSTS
     const hostnames = Array.from(hostSet).slice(0, MAX_HOSTS);
 
-    job.stage = "Resolving DNS";
-    job.progress = 15;
+    job.stage = `Scanning hosts (0/${hostnames.length})`;
+    job.progress = 10;
 
-    // Resolve DNS for all hosts
-    const hostResults: HostResult[] = [];
-    const totalHosts = hostnames.length;
+    // Hosts sharing an IP (e.g. behind a CDN) only get their ports scanned once
+    const portScans = new Map<string, Promise<PortResult[]>>();
+    let completed = 0;
 
-    for (let i = 0; i < totalHosts; i++) {
-      if (Date.now() > deadline) {
-        job.status = "aborted";
-        job.error = "Scan duration limit exceeded.";
-        return;
-      }
-
-      const hostname = hostnames[i];
-      const dnsResult = await resolveHost(hostname);
-
-      const host: HostResult = {
-        hostname,
-        resolved: dnsResult.resolved,
-        blockedPrivate: dnsResult.blockedPrivate,
-        addresses: dnsResult.addresses,
-        http: null,
-        https: null,
-        tls: null,
-        openPorts: [],
-        riskLevel: "info",
-        flags: [],
-      };
-
-      if (dnsResult.blockedPrivate) {
-        host.flags.push("Private Resolution Blocked");
-        hostResults.push(host);
-        continue;
-      }
-
-      if (!dnsResult.resolved) {
-        host.flags.push("Unresolved");
-        hostResults.push(host);
-        continue;
-      }
-
-      hostResults.push(host);
-
-      job.progress = 15 + Math.floor((i / totalHosts) * 20);
-    }
-
-    // HTTP/HTTPS checks for resolved hosts
-    job.stage = "Checking HTTP/HTTPS reachability";
-    job.progress = 35;
-
-    const resolvedHosts = hostResults.filter((h) => h.resolved && !h.blockedPrivate);
-
-    for (let i = 0; i < resolvedHosts.length; i++) {
-      if (Date.now() > deadline) {
-        job.status = "aborted";
-        job.error = "Scan duration limit exceeded.";
-        return;
-      }
-
-      const host = resolvedHosts[i];
-
-      const [httpResult, httpsResult] = await Promise.all([
-        checkHttp(host.hostname, "http"),
-        checkHttp(host.hostname, "https"),
-      ]);
-
-      host.http = httpResult;
-      host.https = httpsResult;
-
-      job.progress = 35 + Math.floor((i / resolvedHosts.length) * 20);
-    }
-
-    // TLS checks
-    job.stage = "Checking TLS certificates";
-    job.progress = 55;
-
-    for (let i = 0; i < resolvedHosts.length; i++) {
-      if (Date.now() > deadline) {
-        job.status = "aborted";
-        job.error = "Scan duration limit exceeded.";
-        return;
-      }
-
-      const host = resolvedHosts[i];
-      host.tls = await checkTls(host.hostname);
-
-      if (host.tls?.expiringSoon) {
-        host.flags.push("TLS Expiring Soon");
-      }
-
-      job.progress = 55 + Math.floor((i / resolvedHosts.length) * 15);
-    }
-
-    // Port scanning
-    job.stage = "Scanning allowed ports";
-    job.progress = 70;
-
-    for (let i = 0; i < resolvedHosts.length; i++) {
-      if (Date.now() > deadline) {
-        job.status = "aborted";
-        job.error = "Scan duration limit exceeded.";
-        return;
-      }
-
-      const host = resolvedHosts[i];
-      const ip = host.addresses[0];
-      if (ip) {
-        host.openPorts = await scanPorts(ip);
-      }
-
-      job.progress = 70 + Math.floor((i / resolvedHosts.length) * 25);
-    }
+    const hostResults = await mapWithConcurrency(hostnames, HOST_CONCURRENCY, async (hostname) => {
+      const host = await scanHost(hostname, deadline, portScans);
+      completed++;
+      job.stage = `Scanning hosts (${completed}/${hostnames.length})`;
+      job.progress = 10 + Math.floor((completed / hostnames.length) * 85);
+      return host;
+    });
 
     // Determine risk levels
     job.stage = "Calculating risk";
@@ -206,26 +114,117 @@ export async function runScan(jobId: string): Promise<void> {
       hosts: hostResults,
       summary,
       riskScore,
+      incompleteHosts: hostResults.filter((h) => h.flags.includes(TIME_LIMIT_FLAG)).length,
     };
 
     job.result = result;
     job.status = "completed";
     job.progress = 100;
     job.stage = "Complete";
-    job.completedAt = Date.now();
 
     logScan(job.domain, duration, hostResults.length);
   } catch (err: unknown) {
     job.status = "failed";
     job.error = err instanceof Error ? err.message : "Unexpected error during scan.";
+  } finally {
+    job.completedAt = Date.now();
   }
 }
 
-function generateId(): string {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let id = "";
-  for (let i = 0; i < 16; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+async function scanHost(
+  hostname: string,
+  deadline: number,
+  portScans: Map<string, Promise<PortResult[]>>
+): Promise<HostResult> {
+  const host: HostResult = {
+    hostname,
+    resolved: false,
+    blockedPrivate: false,
+    addresses: [],
+    http: null,
+    https: null,
+    tls: null,
+    openPorts: [],
+    riskLevel: "info",
+    flags: [],
+  };
+
+  if (Date.now() > deadline) {
+    host.flags.push(TIME_LIMIT_FLAG);
+    return host;
   }
-  return id;
+
+  const dnsResult = await resolveHost(hostname);
+  host.resolved = dnsResult.resolved;
+  host.blockedPrivate = dnsResult.blockedPrivate;
+  host.addresses = dnsResult.addresses;
+
+  if (dnsResult.blockedPrivate) {
+    host.flags.push("Private Resolution Blocked");
+    return host;
+  }
+
+  if (!dnsResult.resolved) {
+    host.flags.push("Unresolved");
+    return host;
+  }
+
+  if (Date.now() > deadline) {
+    host.flags.push(TIME_LIMIT_FLAG);
+    return host;
+  }
+
+  const ip = host.addresses[0];
+  let portScan = portScans.get(ip);
+  if (!portScan) {
+    portScan = scanPorts(ip);
+    portScans.set(ip, portScan);
+  }
+
+  const [httpResult, httpsResult, tlsResult, openPorts] = await Promise.all([
+    checkHttp(hostname, "http", host.addresses),
+    checkHttp(hostname, "https", host.addresses),
+    checkTls(hostname, host.addresses),
+    portScan,
+  ]);
+
+  host.http = httpResult;
+  host.https = httpsResult;
+  host.tls = tlsResult;
+  host.openPorts = [...openPorts];
+
+  if (host.tls?.expiringSoon) {
+    host.flags.push("TLS Expiring Soon");
+  }
+
+  return host;
 }
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+// Periodic cleanup of finished (or stuck) jobs
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, job] of jobStore) {
+    if (now - (job.completedAt ?? job.startedAt) > JOB_TTL_MS) {
+      jobStore.delete(id);
+    }
+  }
+}, 5 * 60 * 1000).unref();
