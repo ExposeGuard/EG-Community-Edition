@@ -57,7 +57,8 @@ export async function checkTls(hostname: string): Promise<TlsResult | null> {
 function formatCertField(field: tls.PeerCertificate["issuer"]): string {
   if (!field) return "Unknown";
   const parts: string[] = [];
-  if (field.O) parts.push(field.O);
-  if (field.CN) parts.push(field.CN);
+  // Multi-valued RDNs are returned as arrays
+  if (field.O) parts.push([field.O].flat().join(", "));
+  if (field.CN) parts.push([field.CN].flat().join(", "));
   return parts.join(" - ") || "Unknown";
 }
