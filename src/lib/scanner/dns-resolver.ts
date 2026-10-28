@@ -1,4 +1,5 @@
 import dns from "dns";
+import net from "net";
 import { isPrivateIP } from "@/lib/utils/ip-filter";
 
 interface DnsResult {
@@ -8,12 +9,18 @@ interface DnsResult {
 }
 
 export async function resolveHost(hostname: string): Promise<DnsResult> {
-  const addresses: string[] = [];
+  // IP literals (e.g. from a redirect Location header) skip DNS but are still filtered
+  const literal = hostname.replace(/^\[(.*)\]$/, "$1");
+  if (net.isIP(literal)) {
+    return { resolved: true, addresses: [literal], blockedPrivate: isPrivateIP(literal) };
+  }
 
-  const ipv4 = await resolveRecords(hostname, "A");
-  const ipv6 = await resolveRecords(hostname, "AAAA");
+  const [ipv4, ipv6] = await Promise.all([
+    resolveRecords(hostname, "A"),
+    resolveRecords(hostname, "AAAA"),
+  ]);
 
-  addresses.push(...ipv4, ...ipv6);
+  const addresses = [...ipv4, ...ipv6];
 
   if (addresses.length === 0) {
     return { resolved: false, addresses: [], blockedPrivate: false };
