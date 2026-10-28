@@ -61,7 +61,7 @@ Open **http://localhost:3000** and start scanning.
 
 ### Manual Setup
 
-Requires **Node.js 20+**.
+Requires **Node.js 24+** (current LTS).
 
 ```bash
 npm install
@@ -77,6 +77,16 @@ Open **http://localhost:3000**.
 npm run build
 npm start
 ```
+
+### Development checks
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+```
+
+CI runs these plus `npm audit`, a production build, and a Docker image smoke test on every pull request. Dependabot opens weekly update PRs for npm packages, GitHub Actions, and the Docker base image.
 
 ---
 
@@ -94,12 +104,13 @@ Domain Input
           ▼
 ┌─────────────────────┐
 │  DNS Resolution      │  A + AAAA records
-│                      │  Private IPs blocked (RFC1918, loopback, link-local)
+│                      │  Private / reserved IPs blocked (see Safety below)
 └─────────┬───────────┘
           │
           ▼
 ┌─────────────────────┐
-│  HTTP/HTTPS Checks   │  HEAD → GET fallback, 5s timeout, 3 redirects max
+│  HTTP/HTTPS Checks   │  HEAD → GET fallback, 5s timeout, 3 redirects max,
+│                      │  each redirect hop re-validated; pinned to vetted IPs
 │  TLS Inspection      │  Issuer, expiry, days remaining
 └─────────┬───────────┘
           │
@@ -124,13 +135,15 @@ Domain Input
 |---|---|
 | Ownership consent | Required before every scan |
 | Blocked TLDs | `.gov`, `.mil` |
-| Private IP blocking | RFC1918, loopback (127.x), link-local (169.254.x), RFC4193 IPv6 |
+| Private IP blocking | All IANA special-purpose ranges: RFC1918, loopback, link-local (incl. cloud metadata), CGNAT, multicast, reserved, IPv6 ULA/link-local, and IPv6 forms that embed IPv4 (mapped, NAT64, 6to4) |
+| SSRF protection | Connections are pinned to the validated IPs (no re-resolution), and every HTTP redirect hop is re-validated |
 | Host cap | 50 per scan |
-| Scan timeout | 2 minutes hard limit, auto-abort |
-| Rate limit | 5 scans per hour per client IP |
+| Scan timeout | 2 minutes hard limit; hosts not reached in time are flagged and partial results are returned |
+| Concurrency | Up to 10 hosts scanned in parallel; at most 3 scans running at once |
+| Rate limit | 5 scans per hour per client IP, 30 per hour per server |
 | Port behavior | TCP connect only — no payload, no banner grab, no auth |
 | Port timeout | 800–1200ms per connection |
-| No persistence | All data in-memory, nothing written to disk |
+| No persistence | All data in-memory, nothing written to disk; results expire after 1 hour |
 
 ---
 
@@ -174,6 +187,9 @@ Score is capped at 100. Every finding includes a human-readable explanation.
 | Variable | Default | Description |
 |---|---|---|
 | `LOGGING_ENABLED` | `true` | Toggles scan event logging to stdout. Logs include timestamp, domain, duration, and host count. No IP addresses are logged. |
+| `TRUSTED_PROXY_HOPS` | `1` | Number of reverse proxies in front of the app that append to `X-Forwarded-For`. The client IP for rate limiting is taken that many entries from the right. |
+
+> **Exposing the app publicly:** put it behind a reverse proxy that sets `X-Forwarded-For`. Without one, the header is client-controlled, so per-IP rate limits can be evaded (the per-server limit still applies). Terminate TLS and set HSTS at the proxy.
 
 ---
 
@@ -184,6 +200,7 @@ src/
 ├── app/
 │   ├── api/scan/              POST /api/scan — start a scan
 │   │   └── status/            GET /api/scan/status?id= — poll progress & results
+│   ├── api/health/            GET /api/health — container healthcheck
 │   ├── results/page.tsx       Results view with live polling
 │   ├── page.tsx               Landing page with scan form
 │   ├── layout.tsx             Shell layout (header, footer)
@@ -202,6 +219,7 @@ src/
     └── utils/
         ├── validation.ts      Domain input validation
         ├── ip-filter.ts       Private/reserved IP detection
+        ├── pinned-lookup.ts   Pins connections to validated IPs
         ├── rate-limit.ts      In-memory rate limiter
         └── export.ts          JSON and CSV generation
 ```
