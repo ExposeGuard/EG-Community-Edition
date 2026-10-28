@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, Suspense } from "react";
+import { useEffect, useState, Suspense } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ScanResult, HostResult } from "@/lib/scanner/types";
 import { exportToJson, exportToCsv } from "@/lib/utils/export";
@@ -8,7 +9,7 @@ import { exportToJson, exportToCsv } from "@/lib/utils/export";
 interface JobStatus {
   id: string;
   domain: string;
-  status: "queued" | "running" | "completed" | "failed" | "aborted";
+  status: "queued" | "running" | "completed" | "failed";
   progress: number;
   stage: string;
   error?: string;
@@ -20,31 +21,33 @@ function ResultsContent() {
   const jobId = searchParams.get("id");
 
   const [job, setJob] = useState<JobStatus | null>(null);
-  const [error, setError] = useState("");
+  const [fetchError, setFetchError] = useState("");
   const [expandedHost, setExpandedHost] = useState<string | null>(null);
 
-  const pollStatus = useCallback(async () => {
-    if (!jobId) return;
+  const error = jobId ? fetchError : "No scan ID provided.";
+  const finished = job?.status === "completed" || job?.status === "failed";
 
-    try {
-      const res = await fetch(`/api/scan/status?id=${jobId}`);
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || "Failed to fetch scan status.");
-        return;
-      }
-
-      setJob(data);
-    } catch {
-      setError("Connection error.");
-    }
-  }, [jobId]);
-
+  // Poll until the scan finishes or an error is shown
   useEffect(() => {
-    if (!jobId) {
-      setError("No scan ID provided.");
-      return;
+    if (!jobId || finished || fetchError) return;
+
+    let cancelled = false;
+
+    async function pollStatus() {
+      try {
+        const res = await fetch(`/api/scan/status?id=${encodeURIComponent(jobId!)}`);
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (!res.ok) {
+          setFetchError(data.error || "Failed to fetch scan status.");
+          return;
+        }
+
+        setJob(data);
+      } catch {
+        if (!cancelled) setFetchError("Connection error.");
+      }
     }
 
     pollStatus();
@@ -53,23 +56,20 @@ function ResultsContent() {
       pollStatus();
     }, 1500);
 
-    return () => clearInterval(interval);
-  }, [jobId, pollStatus]);
-
-  useEffect(() => {
-    if (job?.status === "completed" || job?.status === "failed" || job?.status === "aborted") {
-      // Stop polling implicitly by not needing to act further
-    }
-  }, [job?.status]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [jobId, finished, fetchError]);
 
   if (error) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-16">
         <div className="bg-danger/10 border border-danger/20 rounded-xl p-6 text-center">
           <p className="text-danger">{error}</p>
-          <a href="/" className="text-accent text-sm mt-4 inline-block hover:underline">
+          <Link href="/" className="text-accent text-sm mt-4 inline-block hover:underline">
             Back to scan
-          </a>
+          </Link>
         </div>
       </div>
     );
@@ -105,17 +105,15 @@ function ResultsContent() {
     );
   }
 
-  if (job.status === "failed" || job.status === "aborted") {
+  if (job.status === "failed") {
     return (
       <div className="max-w-2xl mx-auto px-4 py-16">
         <div className="bg-danger/10 border border-danger/20 rounded-xl p-8 text-center">
-          <h2 className="text-xl font-semibold mb-2">
-            Scan {job.status === "aborted" ? "Aborted" : "Failed"}
-          </h2>
+          <h2 className="text-xl font-semibold mb-2">Scan Failed</h2>
           <p className="text-danger text-sm">{job.error || "An unexpected error occurred."}</p>
-          <a href="/" className="text-accent text-sm mt-4 inline-block hover:underline">
+          <Link href="/" className="text-accent text-sm mt-4 inline-block hover:underline">
             Try again
-          </a>
+          </Link>
         </div>
       </div>
     );
@@ -173,6 +171,13 @@ function ResultsContent() {
           </button>
         </div>
       </div>
+
+      {result.incompleteHosts > 0 && (
+        <div className="bg-warning/10 border border-warning/20 rounded-xl p-4 mb-8 text-sm text-warning">
+          The scan reached its time limit. {result.incompleteHosts} of {result.summary.totalHosts}{" "}
+          hosts were not fully scanned, so these results may be incomplete.
+        </div>
+      )}
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
@@ -237,9 +242,9 @@ function ResultsContent() {
       </div>
 
       <div className="mt-6 text-center">
-        <a href="/" className="text-accent text-sm hover:underline">
+        <Link href="/" className="text-accent text-sm hover:underline">
           Run another scan
-        </a>
+        </Link>
       </div>
     </div>
   );

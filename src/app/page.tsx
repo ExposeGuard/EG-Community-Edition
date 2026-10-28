@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
+import logo from "../../public/eglogo.png";
 
 export default function HomePage() {
   const router = useRouter();
@@ -49,7 +51,7 @@ export default function HomePage() {
   return (
     <div className="max-w-2xl mx-auto px-4 py-16">
       <div className="text-center mb-12">
-        <img src="/eglogo.png" alt="ExposeGuard" className="w-24 h-24 mx-auto mb-6" />
+        <Image src={logo} alt="ExposeGuard" className="w-24 h-24 mx-auto mb-6" />
         <h1 className="text-3xl font-bold tracking-tight mb-4">
           Find My Exposed Services
         </h1>
